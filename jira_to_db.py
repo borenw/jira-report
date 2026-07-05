@@ -118,6 +118,10 @@ def init_db(conn):
             jql         TEXT,
             issue_count INTEGER
         );
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
         """
     )
     conn.commit()
@@ -159,6 +163,11 @@ def main():
 
     conn = sqlite3.connect(args.db)
     init_db(conn)
+
+    # Remember the base URL so chart.py can build issue links without the creds.
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('base_url', ?)",
+                 (conf["base_url"],))
+    conn.commit()
 
     fetched = 0
     page = 0

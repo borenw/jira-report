@@ -13,8 +13,9 @@ Features:
   * Bar charts: issues by status, by project, by assignee.
   * Trend line (x-axis = day): cumulative open issues over time (burndown),
     honouring the same filters.
-  * Forecast: best / likely / worst case burndown projections, each labelled
-    with the date its line crosses the x-axis (i.e. projected "all done").
+  * Forecast: likely = average daily trend, best/worst = trend -/+ 1 sigma;
+    each labelled with the date its line crosses the x-axis ("all done").
+  * Issue list: sortable, with keys linking to the live Jira issue (new tab).
 
 Usage:
     python3 chart.py                     # jira.db  -> report.html
@@ -22,6 +23,7 @@ Usage:
 """
 
 import argparse
+import configparser
 import json
 import os
 import sqlite3
@@ -51,6 +53,27 @@ def get_version(base_dir):
     except Exception:
         pass
     return label
+
+
+def resolve_base_url(explicit, conn, config_path):
+    """Find the Jira base URL for issue links: --base-url > DB meta > ini file."""
+    if explicit:
+        return explicit.rstrip("/")
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='base_url'").fetchone()
+        if row and row[0]:
+            return row[0].rstrip("/")
+    except sqlite3.OperationalError:
+        pass  # older DB without a meta table
+    if config_path and os.path.exists(config_path):
+        cfg = configparser.ConfigParser()
+        cfg.read(config_path)
+        if cfg.has_option("jira", "base_url"):
+            b = cfg.get("jira", "base_url").strip()
+            if b and "YOURSITE" not in b:
+                return b.rstrip("/")
+    return ""
+
 
 TEMPLATE = r'''<!doctype html>
 <html lang="en">
@@ -100,6 +123,8 @@ TEMPLATE = r'''<!doctype html>
   table.itbl th:hover { color:var(--ink); }
   table.itbl tbody tr:hover { background:#f9fafb; }
   table.itbl td.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  table.itbl td a { color:var(--blue); text-decoration:none; }
+  table.itbl td a:hover { text-decoration:underline; }
   .arrow { font-size:10px; color:var(--blue); }
   .foot { max-width:1000px; margin:0 auto; padding:8px 24px 40px; color:var(--muted); font-size:12px; }
 </style>
@@ -138,9 +163,9 @@ TEMPLATE = r'''<!doctype html>
     <div id="trend"></div>
     <div class="legend">
       <span><span class="swatch" style="background:#1f2430"></span>Open (history)</span>
-      <span><span class="swatch" style="background:var(--green)"></span>Best case</span>
-      <span><span class="swatch" style="background:var(--blue)"></span>Likely</span>
-      <span><span class="swatch" style="background:var(--red)"></span>Worst case</span>
+      <span><span class="swatch" style="background:var(--green)"></span>Best case (avg − 1σ)</span>
+      <span><span class="swatch" style="background:var(--blue)"></span>Likely (avg trend)</span>
+      <span><span class="swatch" style="background:var(--red)"></span>Worst case (avg + 1σ)</span>
     </div>
     <div class="legend" id="forecast-text"></div>
     <div class="sub" style="margin-top:8px">Burndown &amp; forecast always use every issue
@@ -165,6 +190,7 @@ TEMPLATE = r'''<!doctype html>
 const ISSUES = __DATA__;
 const BUILD = "__VERSION__";
 const GENERATED = "__GENERATED__";
+const JIRA_BASE = "__BASE_URL__";   // "" -> keys shown as plain text
 
 // ---------- helpers ----------
 const $ = s => document.querySelector(s);
@@ -278,12 +304,16 @@ function forecast(days, windowDays){
     if(i > 0) deltas.push(days[i].open - days[i-1].open);
   }
   if(!deltas.length) return null;
-  const likely = deltas.reduce((a,b)=>a+b,0)/deltas.length;
-  const best   = percentile(deltas, 0.2);   // fastest burn (most negative)
-  const worst  = percentile(deltas, 0.8);   // slowest burn
+  // Average daily change (the trend) and its standard deviation.
+  const mean = deltas.reduce((a,b)=>a+b,0)/deltas.length;
+  const variance = deltas.reduce((a,b)=>a+(b-mean)*(b-mean),0)/deltas.length;
+  const sd = Math.sqrt(variance);
+  const likely = mean;          // average trend
+  const best   = mean - sd;     // one sigma faster burn (more negative)
+  const worst  = mean + sd;     // one sigma slower burn
   const toZero = rate => (rate < -1e-9) ? currentOpen/(-rate) : null; // days
   return {
-    today: last.t, currentOpen,
+    today: last.t, currentOpen, sd,
     cases: {
       best:   { rate: best,   days: toZero(best) },
       likely: { rate: likely, days: toZero(likely) },
@@ -362,18 +392,28 @@ function renderTrend(days, fc){
   const hist = days.map(d => x(d.t)+","+y(d.open)).join(" ");
   parts.push('<polyline points="'+hist+'" fill="none" stroke="#1f2430" stroke-width="2"/>');
 
-  // forecast lines + crossing labels
+  // forecast projection lines + crossing dots
+  const CASE_LABEL = { best:"Best", likely:"Likely", worst:"Worst" };
   if(fc){
     for(const key of ["best","likely","worst"]){
       const p = proj[key];
       parts.push('<line x1="'+x(today)+'" y1="'+y(fc.currentOpen)+'" x2="'+x(p.endT)+'" y2="'+y(p.endOpen)+
                  '" stroke="'+colors[key]+'" stroke-width="2" stroke-dasharray="5 4"/>');
       if(p.crossT !== null){
-        const cx = x(p.crossT);
-        parts.push('<circle cx="'+cx+'" cy="'+y(0)+'" r="3.5" fill="'+colors[key]+'"/>');
-        parts.push('<text x="'+cx+'" y="'+(y(0)-6)+'" font-size="10" fill="'+colors[key]+
-                   '" text-anchor="middle">'+fmtDate(p.crossT)+'</text>');
+        parts.push('<circle cx="'+x(p.crossT)+'" cy="'+y(0)+'" r="3.5" fill="'+colors[key]+'"/>');
       }
+    }
+    // stacked, non-overlapping labels in the (empty) top-right: Best on top,
+    // then Likely, then Worst — average trend and ±1 sigma.
+    let ly = m.t + 14;
+    for(const key of ["best","likely","worst"]){
+      const p = proj[key], c = fc.cases[key];
+      const txt = (c.days !== null && p.crossT !== null)
+        ? CASE_LABEL[key] + " · " + fmtDate(p.crossT) + " (~" + Math.round(c.days) + "d)"
+        : CASE_LABEL[key] + " · no completion";
+      parts.push('<text x="'+(W-m.r-6)+'" y="'+ly+'" font-size="11" font-weight="600" fill="'+colors[key]+
+                 '" text-anchor="end">'+txt+'</text>');
+      ly += 16;
     }
   }
 
@@ -439,7 +479,12 @@ function renderTable(){
     let v = it[c.k];
     if(c.date) v = v ? v.slice(0,10) : "";
     if(v === null || v === undefined || v === "") v = "—";
-    return '<td class="' + (c.mono ? "mono" : "") + '">' + esc(v) + "</td>";
+    let cell = esc(v);
+    if(c.k === "key" && JIRA_BASE && v !== "—"){
+      cell = '<a href="' + JIRA_BASE + '/browse/' + encodeURIComponent(v) +
+             '" target="_blank" rel="noopener noreferrer">' + esc(v) + "</a>";
+    }
+    return '<td class="' + (c.mono ? "mono" : "") + '">' + cell + "</td>";
   }).join("") + "</tr>").join("") + "</tbody>";
 
   $("#issue-table").innerHTML = head + body;
@@ -488,6 +533,11 @@ def main():
     ap = argparse.ArgumentParser(description="Generate an HTML report from jira.db")
     ap.add_argument("--db", default="jira.db", help="input SQLite database")
     ap.add_argument("--out", default="report.html", help="output HTML file")
+    ap.add_argument("--base-url", default="",
+                    help="Jira base URL for issue-key links (e.g. https://jira.acme.com); "
+                         "default: read from the DB meta table, else jira_secrets.ini")
+    ap.add_argument("--config", default="jira_secrets.ini",
+                    help="ini file to read base_url from when --base-url is not given")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -495,6 +545,7 @@ def main():
 
     conn = sqlite3.connect(args.db)
     rows = conn.execute(f"SELECT {', '.join(COLS)} FROM issues").fetchall()
+    base_url = resolve_base_url(args.base_url, conn, args.config)
     conn.close()
     issues = [dict(zip(COLS, r)) for r in rows]
 
@@ -502,15 +553,17 @@ def main():
     version = get_version(base_dir)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    # Replace the version/timestamp tokens before the data blob, so issue text
-    # that happens to contain a token can never be clobbered.
+    # Replace the version/timestamp/base-url tokens before the data blob, so
+    # issue text that happens to contain a token can never be clobbered.
     html = (TEMPLATE
             .replace("__VERSION__", version)
             .replace("__GENERATED__", generated)
+            .replace("__BASE_URL__", base_url)
             .replace("__DATA__", json.dumps(issues)))
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(html)
-    print(f"wrote {args.out} ({len(issues)} issues, {version}). Open it in a browser.")
+    link_note = f"links -> {base_url}/browse/*" if base_url else "no base URL (keys not linked)"
+    print(f"wrote {args.out} ({len(issues)} issues, {version}, {link_note}). Open it in a browser.")
 
 
 if __name__ == "__main__":

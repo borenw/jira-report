@@ -1,6 +1,6 @@
 # Jira → SQLite → HTML report
 
-**Version `1.1.0`** — the canonical revision lives in [`VERSION`](VERSION).
+**Version `1.2.0`** — the canonical revision lives in [`VERSION`](VERSION).
 Every generated `report.html` is stamped with its version, git revision, and
 build time in the page header and footer, so you can always tell which release
 produced a given report. See [Revision history](#revision-history).
@@ -95,21 +95,27 @@ completion-date forecasts. Change the filters and watch every chart update.
   rises and the forecast will say so. The burndown deliberately includes
   resolved issues in the math (using their resolution dates to subtract them
   off) — without them the line could only ever go up.
-- **Forecast:** three dashed projections extrapolated from the recent
-  resolution rate within the chosen window:
-  - **Best case** (green) — fast burn-down rate (20th percentile of daily change)
-  - **Likely** (blue) — average daily change
-  - **Worst case** (red) — slow rate (80th percentile)
+- **Forecast:** three dashed projections from the recent daily change (over the
+  chosen window). The rate is the **average daily change** (the trend) and its
+  **standard deviation (σ)**:
+  - **Likely** (blue) — the average trend
+  - **Best case** (green) — average **− 1σ** (one sigma faster burn-down)
+  - **Worst case** (red) — average **+ 1σ** (one sigma slower)
 
-  Each line is labelled with the date it **crosses the x-axis** (open = 0, i.e.
-  projected "everything done"). If the backlog isn't shrinking, that case is
-  labelled *no completion — backlog not shrinking* instead. Projections are
-  capped at 3× the historical span so they stay readable.
+  The three completion-date labels are stacked in the top-right of the chart —
+  **Best on top, then Likely, then Worst** — so they never overlap. Each is the
+  date its line **crosses the x-axis** (open = 0, "everything done"). If a case
+  isn't shrinking, it reads *no completion*. Projections are capped at 3× the
+  historical span so they stay readable.
+- **Sortable issue list:** every issue **key links to the live Jira issue**
+  (`<base>/browse/<KEY>`, opens in a new tab). The base URL is taken from the
+  DB (stored at fetch time) or `--base-url`; the example uses a placeholder.
 
 ## Revision history
 
 | Version | Changes |
 |---------|---------|
+| **1.2.0** | Forecast now uses the average daily trend ±1σ (was 20th/80th percentile); best/likely/worst completion labels stacked top-right so they no longer overlap; issue-list keys link to the live Jira issue in a new tab (base URL stored in the DB at fetch time). |
 | **1.1.0** | Report defaults to open issues (not done / resolved / closed); burndown & tiles use the project/user scope so the resolution rate stays real; added a sortable issue list below the charts that matches the forecast backlog; reports are now version-stamped. |
 | **1.0.0** | Initial release: curl-based fetch into SQLite, interactive HTML report with filters, bar charts, and a best/likely/worst-case burndown forecast. |
 
