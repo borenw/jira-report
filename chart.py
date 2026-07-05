@@ -71,6 +71,15 @@ TEMPLATE = r'''<!doctype html>
   .legend { display:flex; gap:16px; font-size:12px; color:var(--muted); margin-top:8px; flex-wrap:wrap; }
   .swatch { display:inline-block; width:12px; height:3px; vertical-align:middle; margin-right:5px; }
   .empty { color:var(--muted); font-style:italic; }
+  .tblwrap { overflow:auto; max-height:540px; border:1px solid var(--line); border-radius:8px; }
+  table.itbl { border-collapse:collapse; width:100%; font-size:13px; }
+  table.itbl th, table.itbl td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.itbl th { cursor:pointer; user-select:none; color:var(--muted); font-weight:600;
+                  position:sticky; top:0; background:var(--card); z-index:1; }
+  table.itbl th:hover { color:var(--ink); }
+  table.itbl tbody tr:hover { background:#f9fafb; }
+  table.itbl td.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .arrow { font-size:10px; color:var(--blue); }
 </style>
 </head>
 <body>
@@ -84,9 +93,9 @@ TEMPLATE = r'''<!doctype html>
     <label>User (assignee) <select id="f-assignee"></select></label>
     <label>Status <select id="f-status"></select></label>
     <label>State <select id="f-state">
-      <option value="">All</option>
-      <option value="open">Open</option>
+      <option value="open" selected>Open (not done / resolved / closed)</option>
       <option value="resolved">Resolved / Closed</option>
+      <option value="">All</option>
     </select></label>
     <label>Forecast window <select id="f-window">
       <option value="30">last 30 days</option>
@@ -97,7 +106,7 @@ TEMPLATE = r'''<!doctype html>
   </div>
 
   <div class="tiles">
-    <div class="tile"><div class="n" id="t-total">0</div><div class="l">Issues (filtered)</div></div>
+    <div class="tile"><div class="n" id="t-total">0</div><div class="l">Issues in scope</div></div>
     <div class="tile"><div class="n" id="t-open">0</div><div class="l">Open</div></div>
     <div class="tile"><div class="n" id="t-resolved">0</div><div class="l">Resolved / Closed</div></div>
   </div>
@@ -112,11 +121,21 @@ TEMPLATE = r'''<!doctype html>
       <span><span class="swatch" style="background:var(--red)"></span>Worst case</span>
     </div>
     <div class="legend" id="forecast-text"></div>
+    <div class="sub" style="margin-top:8px">Burndown &amp; forecast always use every issue
+      (open + resolved) in the selected <b>project</b>/<b>user</b> scope, so the resolution rate is
+      real. The <b>Status</b> / <b>State</b> selectors drive the bars and the issue list below;
+      the tiles reflect the full scope.</div>
   </div>
 
   <div class="card"><h2>By status</h2><div id="by-status"></div></div>
   <div class="card"><h2>By project</h2><div id="by-project"></div></div>
   <div class="card"><h2>By assignee (top 15)</h2><div id="by-assignee"></div></div>
+
+  <div class="card">
+    <h2>Issues in scope — <span id="list-count">0</span> rows
+        <span class="sub" style="font-weight:400">(matches the forecast backlog · click a column header to sort)</span></h2>
+    <div class="tblwrap"><table id="issue-table" class="itbl"></table></div>
+  </div>
 </main>
 
 <script>
@@ -163,10 +182,19 @@ function currentFilters(){
   };
 }
 
-function applyFilters(f){
+// project + user scope: drives the tiles and the burndown/forecast (needs
+// resolved issues too, so it deliberately ignores the status/state selectors).
+function scopePA(f){
   return ISSUES.filter(it => {
     if(f.project  && it.project  !== f.project)  return false;
     if(f.assignee && it.assignee !== f.assignee) return false;
+    return true;
+  });
+}
+
+// scope + status/state: drives the bars and the issue list. Defaults to open.
+function applyDrill(f){
+  return scopePA(f).filter(it => {
     if(f.status   && it.status   !== f.status)   return false;
     if(f.state === "open"     && isResolved(it)) return false;
     if(f.state === "resolved" && !isResolved(it)) return false;
@@ -341,22 +369,77 @@ function renderTrend(days, fc){
   } else { ft.innerHTML = ""; }
 }
 
+// ---------- sortable issue list ----------
+const COLUMNS = [
+  { k:"key",        l:"Key",      mono:true },
+  { k:"project",    l:"Project"   },
+  { k:"issue_type", l:"Type"      },
+  { k:"status",     l:"Status"    },
+  { k:"priority",   l:"Priority"  },
+  { k:"assignee",   l:"Assignee"  },
+  { k:"created",    l:"Created",  date:true },
+  { k:"resolved",   l:"Resolved", date:true },
+];
+const PRANK = { Highest:0, High:1, Medium:2, Low:3, Lowest:4 };
+let sortKey = "created", sortDir = -1;   // newest first by default
+let listRows = [];
+
+function sortBy(k){
+  const col = COLUMNS.find(c => c.k === k);
+  if(sortKey === k) sortDir = -sortDir;
+  else { sortKey = k; sortDir = (col && col.date) ? -1 : 1; }
+  renderTable();
+}
+
+function renderTable(){
+  const val = it => (sortKey === "priority")
+    ? (PRANK[it.priority] !== undefined ? PRANK[it.priority] : 99)
+    : it[sortKey];
+  const rows = [...listRows].sort((a,b) => {
+    let x = val(a), y = val(b);
+    const ax = (x === null || x === undefined || x === "");
+    const ay = (y === null || y === undefined || y === "");
+    if(ax && ay) return 0; if(ax) return 1; if(ay) return -1;   // blanks last
+    if(x < y) return -sortDir; if(x > y) return sortDir; return 0;
+  });
+  $("#list-count").textContent = rows.length;
+
+  const head = "<thead><tr>" + COLUMNS.map(c => {
+    const arrow = c.k === sortKey ? ' <span class="arrow">' + (sortDir < 0 ? "▼" : "▲") + "</span>" : "";
+    return '<th onclick="sortBy(\'' + c.k + '\')">' + c.l + arrow + "</th>";
+  }).join("") + "</tr></thead>";
+
+  const esc = s => String(s).replace(/[&<>]/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
+  const body = "<tbody>" + rows.map(it => "<tr>" + COLUMNS.map(c => {
+    let v = it[c.k];
+    if(c.date) v = v ? v.slice(0,10) : "";
+    if(v === null || v === undefined || v === "") v = "—";
+    return '<td class="' + (c.mono ? "mono" : "") + '">' + esc(v) + "</td>";
+  }).join("") + "</tr>").join("") + "</tbody>";
+
+  $("#issue-table").innerHTML = head + body;
+}
+
 // ---------- orchestration ----------
 function render(){
   const f = currentFilters();
-  const data = applyFilters(f);
+  const scope = scopePA(f);      // project + user  -> tiles + burndown
+  const view  = applyDrill(f);   // + status/state  -> bars + list
 
-  $("#t-total").textContent    = data.length;
-  $("#t-open").textContent     = data.filter(it => !isResolved(it)).length;
-  $("#t-resolved").textContent = data.filter(isResolved).length;
+  $("#t-total").textContent    = scope.length;
+  $("#t-open").textContent     = scope.filter(it => !isResolved(it)).length;
+  $("#t-resolved").textContent = scope.filter(isResolved).length;
 
-  renderBars("#by-status",   countBy(data, "status"));
-  renderBars("#by-project",  countBy(data, "project"));
-  renderBars("#by-assignee", countBy(data, "assignee"), 15);
+  renderBars("#by-status",   countBy(view, "status"));
+  renderBars("#by-project",  countBy(view, "project"));
+  renderBars("#by-assignee", countBy(view, "assignee"), 15);
 
-  const days = buildTrend(data);
+  const days = buildTrend(scope);
   const fc = forecast(days, f.window);
   renderTrend(days, fc);
+
+  listRows = view;
+  renderTable();
 }
 
 function init(){
