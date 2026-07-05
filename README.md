@@ -11,6 +11,15 @@ jira_secrets.ini  ->  jira_to_db.py  ->  jira.db  ->  chart.py  ->  report.html
    (your creds)        (fetch)          (database)     (build)      (open in browser)
 ```
 
+## 🔎 Live example
+
+**[View an interactive example report →](https://borenw.github.io/jira-report/example_report.html)**
+
+Built from **synthetic data** (no real Jira), it shows exactly what `report.html`
+produces: the pull-down filters, the summary tiles, the by-status / by-project /
+by-assignee bars, and the open-issues trend line with best/likely/worst-case
+completion-date forecasts. Change the filters and watch every chart update.
+
 ## Requirements
 
 - Python 3 (standard library only — no `pip install` needed)
