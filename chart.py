@@ -16,8 +16,10 @@ Features:
   * Forecast: likely = average daily trend, best/worst = trend -/+ 1 sigma;
     each labelled with the date its line crosses the x-axis ("all done").
   * Issue list: sortable, with keys linking to the live Jira issue (new tab).
-  * Logged-activity grid: the selected user's touched issues per weekday over
-    the last two working weeks (Mon-Fri).
+  * Logged-activity: the selected user's worklog HOURS per weekday over the
+    last two working weeks (Mon-Fri), plus an itemised date/issue/hours table
+    with Jira links. Needs `jira_to_db.py --worklogs`; falls back to a
+    touched-issue count when no worklog data is present.
 
 Usage:
     python3 chart.py                     # jira.db  -> report.html
@@ -194,9 +196,9 @@ TEMPLATE = r'''<!doctype html>
   </div>
 
   <div class="card">
-    <h2>Logged activity — last 2 working weeks (Mon–Fri) · <span id="wk-user">all users</span>
-        <span class="sub" style="font-weight:400">(issues created / updated / resolved that day)</span></h2>
+    <h2>Logged activity — last 2 working weeks (Mon–Fri) · <span id="wk-user">all users</span></h2>
     <div id="weekgrid"></div>
+    <div id="worklog-entries" style="margin-top:14px"></div>
   </div>
 </main>
 <footer class="foot" id="foot"></footer>
@@ -206,6 +208,7 @@ const ISSUES = __DATA__;
 const BUILD = "__VERSION__";
 const GENERATED = "__GENERATED__";
 const JIRA_BASE = "__BASE_URL__";   // "" -> keys shown as plain text
+const WORKLOGS = __WORKLOGS__;      // [{k,a,d,h}] issue key, author, day, hours
 
 // ---------- helpers ----------
 const $ = s => document.querySelector(s);
@@ -214,6 +217,15 @@ const DAY_MS = 86400000;
 const isResolved = it => !!(it.resolved || it.status_category === "Done");
 
 function uniq(arr){ return [...new Set(arr.filter(v => v !== null && v !== undefined && v !== ""))].sort(); }
+
+function esc(s){ return String(s).replace(/[&<>"]/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m])); }
+
+function issueLink(key){
+  if(JIRA_BASE) return '<a href="' + JIRA_BASE + '/browse/' + encodeURIComponent(key) +
+                       '" target="_blank" rel="noopener noreferrer">' + esc(key) + "</a>";
+  return esc(key);
+}
+function fmtHours(h){ return (Math.round(h * 10) / 10).toFixed(1) + "h"; }
 
 function fillSelect(id, values, allLabel){
   const sel = $(id);
@@ -489,16 +501,11 @@ function renderTable(){
     return '<th onclick="sortBy(\'' + c.k + '\')">' + c.l + arrow + "</th>";
   }).join("") + "</tr></thead>";
 
-  const esc = s => String(s).replace(/[&<>]/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[m]));
   const body = "<tbody>" + rows.map(it => "<tr>" + COLUMNS.map(c => {
     let v = it[c.k];
     if(c.date) v = v ? v.slice(0,10) : "";
     if(v === null || v === undefined || v === "") v = "—";
-    let cell = esc(v);
-    if(c.k === "key" && JIRA_BASE && v !== "—"){
-      cell = '<a href="' + JIRA_BASE + '/browse/' + encodeURIComponent(v) +
-             '" target="_blank" rel="noopener noreferrer">' + esc(v) + "</a>";
-    }
+    const cell = (c.k === "key" && v !== "—") ? issueLink(v) : esc(v);
     return '<td class="' + (c.mono ? "mono" : "") + '">' + cell + "</td>";
   }).join("") + "</tr>").join("") + "</tbody>";
 
@@ -516,27 +523,80 @@ function latestActivityDay(issues){
   return m;
 }
 
-function renderWeekGrid(scope, userLabel){
-  $("#wk-user").textContent = userLabel;
-  const host = $("#weekgrid");
-  const anchor = latestActivityDay(ISSUES);
-  if(!anchor){ host.innerHTML = '<div class="empty">No dated activity.</div>'; return; }
-
+function twoWeekWeekdays(anchor){
   const anchorMs = Date.parse(anchor + "T00:00:00Z");
   const dow = new Date(anchorMs).getUTCDay();            // 0 Sun .. 6 Sat
   const thisMon = anchorMs - ((dow + 6) % 7) * DAY_MS;   // Monday of anchor week
-  const weeks = [thisMon - 7 * DAY_MS, thisMon];         // last week, then this week
+  return [thisMon - 7 * DAY_MS, thisMon];                // last week, then this week
+}
 
+function renderWeekGrid(projectKeys, user){
+  $("#wk-user").textContent = user || "all users";
+  const host = $("#weekgrid");
+  const entriesHost = $("#worklog-entries");
+  const anchor = latestActivityDay(ISSUES);
+  if(!anchor){ host.innerHTML = '<div class="empty">No dated activity.</div>'; entriesHost.innerHTML=""; return; }
+  const weeks = twoWeekWeekdays(anchor);
+  const winDays = new Set();
+  weeks.forEach(mon => { for(let i=0;i<5;i++) winDays.add(fmtDate(mon + i*DAY_MS)); });
+  const DOWN = ["Mon","Tue","Wed","Thu","Fri"];
+
+  // ---- worklog mode: real hours ----
+  if(WORKLOGS.length){
+    const logs = WORKLOGS.filter(w =>
+      winDays.has(w.d) && projectKeys.has(w.k) && (!user || w.a === user));
+    const hours = {};                       // day -> summed hours
+    weeks.forEach(mon => { for(let i=0;i<5;i++) hours[fmtDate(mon + i*DAY_MS)] = 0; });
+    logs.forEach(w => { hours[w.d] += w.h; });
+
+    let html = '<div style="overflow-x:auto"><table class="wk"><thead><tr><th></th>' +
+               DOWN.map(d => "<th>"+d+"</th>").join("") + "<th>Total</th></tr></thead><tbody>";
+    weeks.forEach(mon => {
+      let wt = 0, cells = "";
+      for(let i=0;i<5;i++){
+        const ds = fmtDate(mon + i*DAY_MS), h = hours[ds] || 0; wt += h;
+        cells += '<td class="' + (h ? "has" : "zero") + '" title="' + ds + '">' + (h ? fmtHours(h) : "·") + "</td>";
+      }
+      html += '<tr><td class="lab">Wk of ' + fmtDate(mon) + "</td>" + cells + '<td class="tot">' + fmtHours(wt) + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    host.innerHTML = html;
+
+    // itemised entries: date · issue link · hours (+ author when all users)
+    logs.sort((a,b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : (a.k < b.k ? -1 : 1)));
+    if(!logs.length){
+      entriesHost.innerHTML = '<div class="empty">No worklog entries in this window for '+(user||"any user")+'.</div>';
+      return;
+    }
+    const showAuthor = !user;
+    const total = logs.reduce((s,w) => s + w.h, 0);
+    let t = '<table class="itbl" style="width:auto"><thead><tr><th>Date</th><th>Day</th><th>Issue</th>' +
+            (showAuthor ? "<th>Who</th>" : "") + '<th style="text-align:right">Hours</th></tr></thead><tbody>';
+    logs.forEach(w => {
+      const wd = DOWN[(new Date(Date.parse(w.d+"T00:00:00Z")).getUTCDay()+6)%7] || "";
+      t += "<tr><td>"+w.d+"</td><td>"+wd+"</td><td class=\"mono\">"+issueLink(w.k)+"</td>" +
+           (showAuthor ? "<td>"+esc(w.a||"—")+"</td>" : "") +
+           '<td style="text-align:right">'+fmtHours(w.h)+"</td></tr>";
+    });
+    t += '<tr><td colspan="'+(showAuthor?4:3)+'" style="text-align:right;font-weight:600">Total</td>' +
+         '<td style="text-align:right;font-weight:600">'+fmtHours(total)+"</td></tr>";
+    t += "</tbody></table>";
+    entriesHost.innerHTML = '<div class="tblwrap" style="max-height:360px">'+t+"</div>";
+    return;
+  }
+
+  // ---- fallback: no worklog data -> touched-issue counts ----
   const counts = {}, keys = {};
   weeks.forEach(mon => { for(let i=0;i<5;i++){ const ds = fmtDate(mon + i*DAY_MS); counts[ds]=0; keys[ds]=[]; } });
-  scope.forEach(it => {
+  ISSUES.forEach(it => {
+    if(!projectKeys.has(it.key)) return;
+    if(user && it.assignee !== user) return;
     const evs = new Set([it.created, it.updated, it.resolved].filter(Boolean).map(v => v.slice(0,10)));
     evs.forEach(ds => { if(ds in counts){ counts[ds]++; keys[ds].push(it.key); } });
   });
-
-  const DOWN = ["Mon","Tue","Wed","Thu","Fri"];
-  let html = '<div style="overflow-x:auto"><table class="wk"><thead><tr><th></th>' +
-             DOWN.map(d => "<th>"+d+"</th>").join("") + "<th>Total</th></tr></thead><tbody>";
+  let html = '<div class="sub" style="margin-bottom:8px">No worklog hours in this database — showing issues <b>touched</b> per day instead. Re-run <code>jira_to_db.py --worklogs</code> to record real hours.</div>';
+  html += '<div style="overflow-x:auto"><table class="wk"><thead><tr><th></th>' +
+          DOWN.map(d => "<th>"+d+"</th>").join("") + "<th>Total</th></tr></thead><tbody>";
   weeks.forEach(mon => {
     let wt = 0, cells = "";
     for(let i=0;i<5;i++){
@@ -548,6 +608,7 @@ function renderWeekGrid(scope, userLabel){
   });
   html += "</tbody></table></div>";
   host.innerHTML = html;
+  entriesHost.innerHTML = "";
 }
 
 // ---------- orchestration ----------
@@ -571,7 +632,11 @@ function render(){
   listRows = view;
   renderTable();
 
-  renderWeekGrid(scope, f.assignee || "all users");
+  // Activity is by worklog AUTHOR, so scope by project only (not assignee) and
+  // filter the logs by the selected user.
+  const projectKeys = new Set(
+    ISSUES.filter(it => !f.project || it.project === f.project).map(it => it.key));
+  renderWeekGrid(projectKeys, f.assignee);
 }
 
 function init(){
@@ -608,6 +673,14 @@ def main():
     conn = sqlite3.connect(args.db)
     rows = conn.execute(f"SELECT {', '.join(COLS)} FROM issues").fetchall()
     base_url = resolve_base_url(args.base_url, conn, args.config)
+    worklogs = []
+    try:
+        wl = conn.execute(
+            "SELECT issue_key, author, started, seconds FROM worklogs").fetchall()
+        worklogs = [{"k": k, "a": a, "d": d, "h": round((s or 0) / 3600.0, 2)}
+                    for (k, a, d, s) in wl]
+    except sqlite3.OperationalError:
+        pass  # DB predates worklog support / no --worklogs run
     conn.close()
     issues = [dict(zip(COLS, r)) for r in rows]
 
@@ -621,6 +694,7 @@ def main():
             .replace("__VERSION__", version)
             .replace("__GENERATED__", generated)
             .replace("__BASE_URL__", base_url)
+            .replace("__WORKLOGS__", json.dumps(worklogs))
             .replace("__DATA__", json.dumps(issues)))
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(html)

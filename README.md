@@ -1,6 +1,6 @@
 # Jira → SQLite → HTML report
 
-**Version `1.3.0`** — the canonical revision lives in [`VERSION`](VERSION).
+**Version `1.4.0`** — the canonical revision lives in [`VERSION`](VERSION).
 Every generated `report.html` is stamped with its version, git revision, and
 build time in the page header and footer, so you can always tell which release
 produced a given report. See [Revision history](#revision-history).
@@ -64,7 +64,11 @@ completion-date forecasts. Change the filters and watch every chart update.
    ```
    python3 jira_to_db.py --config jira_secrets.ini --db jira.db
    python3 jira_to_db.py --jql "project = XYZ AND status != Done"
+   python3 jira_to_db.py --worklogs                 # also fetch logged hours
+   python3 jira_to_db.py --worklogs --worklog-days 14
    ```
+   `--worklogs` makes one extra API call per issue to fetch worklog hours (used
+   by the end-of-page logged-activity table); skip it if you don't need hours.
 
 4. **Generate the report:**
    ```
@@ -110,17 +114,19 @@ completion-date forecasts. Change the filters and watch every chart update.
 - **Sortable issue list:** every issue **key links to the live Jira issue**
   (`<base>/browse/<KEY>`, opens in a new tab). The base URL is taken from the
   DB (stored at fetch time) or `--base-url`; the example uses a placeholder.
-- **Logged-activity grid (end of page):** for the selected **user** (and
-  project), a 2-week × Mon–Fri grid counting issues **touched** (created /
-  updated / resolved) each working day, with weekly totals. Hover a cell to see
-  the issue keys. The window anchors on the most recent activity in the data
-  (≈ today for a fresh pull). *Note:* this is a proxy for "logged work" built
-  from issue event dates — it is not Jira worklog hours (those aren't fetched).
+- **Logged-activity (end of page):** for the selected **user** (worklog author)
+  and project, an hours-per-weekday grid over the last two working weeks
+  (Mon–Fri) **plus an itemised table** — *Date · Day · Issue (linked) · Hours* —
+  with a total. Requires worklog data: run `python3 jira_to_db.py --worklogs`
+  (one extra API call per issue; `--worklog-days N` limits the window, default
+  21). If the DB has no worklogs, this falls back to a per-day **touched-issue
+  count** and tells you to re-run with `--worklogs`.
 
 ## Revision history
 
 | Version | Changes |
 |---------|---------|
+| **1.4.0** | Logged-activity section now shows **real worklog hours**: an hours-per-weekday grid plus an itemised *date / linked issue / hours* table for the selected user. Added `jira_to_db.py --worklogs` (worklog fetch into a new `worklogs` table). Falls back to touched-issue counts when no worklog data exists. |
 | **1.3.0** | Added an end-of-page "logged activity" grid: the selected user's touched issues (created/updated/resolved) per weekday over the last two working weeks (Mon–Fri), 2 rows × 5 columns with weekly totals and per-cell issue keys on hover. |
 | **1.2.0** | Forecast now uses the average daily trend ±1σ (was 20th/80th percentile); best/likely/worst completion labels stacked top-right so they no longer overlap; issue-list keys link to the live Jira issue in a new tab (base URL stored in the DB at fetch time). |
 | **1.1.0** | Report defaults to open issues (not done / resolved / closed); burndown & tiles use the project/user scope so the resolution rate stays real; added a sortable issue list below the charts that matches the forecast backlog; reports are now version-stamped. |

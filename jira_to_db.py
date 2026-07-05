@@ -95,6 +95,54 @@ def curl_search(conf, jql, start_at):
         sys.exit(f"error: could not parse Jira response:\n{proc.stdout[:500]}")
 
 
+def curl_get(conf, url):
+    """GET a Jira REST URL via curl. Returns parsed JSON or None on failure."""
+    curl_config = f'user = "{conf["username"]}:{conf["password"]}"\n'
+    proc = subprocess.run(
+        ["curl", "-s", "--fail-with-body", "--config", "-",
+         "-H", "Accept: application/json", url],
+        input=curl_config, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def fetch_worklogs(conf, conn, days):
+    """Fetch worklogs (author, day, seconds) for every issue in the DB.
+
+    One call per issue to /rest/api/2/issue/{key}/worklog, limited to entries
+    started within the last `days` days. Stored idempotently by worklog id.
+    """
+    started_after_ms = int((datetime.now(timezone.utc).timestamp() - days * 86400) * 1000)
+    keys = [r[0] for r in conn.execute("SELECT key FROM issues").fetchall()]
+    total = 0
+    for i, key in enumerate(keys, 1):
+        url = (f"{conf['base_url']}/rest/api/2/issue/{key}/worklog"
+               f"?startedAfter={started_after_ms}")
+        data = curl_get(conf, url)
+        if not data:
+            continue
+        rows = []
+        for w in data.get("worklogs", []):
+            author = (w.get("author") or {}).get("displayName")
+            started = w.get("started") or ""
+            rows.append((int(w["id"]), key, author, started[:10],
+                         int(w.get("timeSpentSeconds") or 0)))
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO worklogs (id, issue_key, author, started, seconds) "
+                "VALUES (?,?,?,?,?)", rows)
+            conn.commit()
+            total += len(rows)
+        if i % 25 == 0 or i == len(keys):
+            print(f"worklogs: {i}/{len(keys)} issues scanned, {total} entries stored")
+    print(f"worklogs: done ({total} entries within last {days} days)")
+
+
 def init_db(conn):
     conn.executescript(
         """
@@ -121,6 +169,13 @@ def init_db(conn):
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT
+        );
+        CREATE TABLE IF NOT EXISTS worklogs (
+            id        INTEGER PRIMARY KEY,
+            issue_key TEXT,
+            author    TEXT,
+            started   TEXT,   -- YYYY-MM-DD
+            seconds   INTEGER
         );
         """
     )
@@ -156,6 +211,10 @@ def main():
     ap.add_argument("--config", default="jira_secrets.ini", help="credentials .ini file")
     ap.add_argument("--db", default="jira.db", help="output SQLite database")
     ap.add_argument("--jql", help="override the JQL from the config file")
+    ap.add_argument("--worklogs", action="store_true",
+                    help="also fetch worklog hours (one API call per issue)")
+    ap.add_argument("--worklog-days", type=int, default=21,
+                    help="only fetch worklogs started within the last N days (default 21)")
     args = ap.parse_args()
 
     conf = load_config(args.config)
@@ -199,6 +258,10 @@ def main():
         (datetime.now(timezone.utc).isoformat(timespec="seconds"), jql, total),
     )
     conn.commit()
+
+    if args.worklogs:
+        fetch_worklogs(conf, conn, args.worklog_days)
+
     conn.close()
     print(f"done: {total} issues written to {args.db}")
 
