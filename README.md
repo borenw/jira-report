@@ -88,8 +88,13 @@ completion-date forecasts. Change the filters and watch every chart update.
   honour every filter together.
 - **Summary tiles:** filtered totals for all / open / resolved.
 - **Bar charts:** issues by status, by project, by assignee (top 15).
-- **Trend line (x-axis = day):** cumulative *open* issues over time — a burndown
-  built from created vs. resolved dates, recomputed for the current filter.
+- **Trend line (x-axis = day):** the count of **not resolved / closed / done**
+  issues as they stood on each day — i.e. `created-by-day − resolved-by-day`.
+  It falls toward zero only when issues are resolved faster than new ones are
+  created (a project closing out); if creation keeps pace, it stays flat or
+  rises and the forecast will say so. The burndown deliberately includes
+  resolved issues in the math (using their resolution dates to subtract them
+  off) — without them the line could only ever go up.
 - **Forecast:** three dashed projections extrapolated from the recent
   resolution rate within the chosen window:
   - **Best case** (green) — fast burn-down rate (20th percentile of daily change)
