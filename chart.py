@@ -16,6 +16,8 @@ Features:
   * Forecast: likely = average daily trend, best/worst = trend -/+ 1 sigma;
     each labelled with the date its line crosses the x-axis ("all done").
   * Issue list: sortable, with keys linking to the live Jira issue (new tab).
+  * Logged-activity grid: the selected user's touched issues per weekday over
+    the last two working weeks (Mon-Fri).
 
 Usage:
     python3 chart.py                     # jira.db  -> report.html
@@ -127,6 +129,13 @@ TEMPLATE = r'''<!doctype html>
   table.itbl td a:hover { text-decoration:underline; }
   .arrow { font-size:10px; color:var(--blue); }
   .foot { max-width:1000px; margin:0 auto; padding:8px 24px 40px; color:var(--muted); font-size:12px; }
+  table.wk { border-collapse:collapse; }
+  table.wk th, table.wk td { border:1px solid var(--line); padding:6px 12px; text-align:center; font-size:13px; min-width:52px; }
+  table.wk th { background:#f3f4f6; color:var(--muted); font-weight:600; }
+  table.wk td.lab { text-align:left; color:var(--muted); white-space:nowrap; font-weight:600; }
+  table.wk td.zero { color:#cbd0d6; }
+  table.wk td.has { font-weight:600; background:#eff6ff; }
+  table.wk td.tot { background:#f9fafb; font-weight:600; }
 </style>
 </head>
 <body>
@@ -182,6 +191,12 @@ TEMPLATE = r'''<!doctype html>
     <h2>Issues in scope — <span id="list-count">0</span> rows
         <span class="sub" style="font-weight:400">(matches the forecast backlog · click a column header to sort)</span></h2>
     <div class="tblwrap"><table id="issue-table" class="itbl"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Logged activity — last 2 working weeks (Mon–Fri) · <span id="wk-user">all users</span>
+        <span class="sub" style="font-weight:400">(issues created / updated / resolved that day)</span></h2>
+    <div id="weekgrid"></div>
   </div>
 </main>
 <footer class="foot" id="foot"></footer>
@@ -490,6 +505,51 @@ function renderTable(){
   $("#issue-table").innerHTML = head + body;
 }
 
+// ---------- logged-activity grid (last 2 working weeks) ----------
+// Anchor on the most recent activity in the data (not the browser clock), so
+// the window always lands on real data — for live use that's ~today.
+function latestActivityDay(issues){
+  let m = null;
+  issues.forEach(it => [it.created, it.updated, it.resolved].forEach(v => {
+    if(v){ const d = v.slice(0,10); if(!m || d > m) m = d; }
+  }));
+  return m;
+}
+
+function renderWeekGrid(scope, userLabel){
+  $("#wk-user").textContent = userLabel;
+  const host = $("#weekgrid");
+  const anchor = latestActivityDay(ISSUES);
+  if(!anchor){ host.innerHTML = '<div class="empty">No dated activity.</div>'; return; }
+
+  const anchorMs = Date.parse(anchor + "T00:00:00Z");
+  const dow = new Date(anchorMs).getUTCDay();            // 0 Sun .. 6 Sat
+  const thisMon = anchorMs - ((dow + 6) % 7) * DAY_MS;   // Monday of anchor week
+  const weeks = [thisMon - 7 * DAY_MS, thisMon];         // last week, then this week
+
+  const counts = {}, keys = {};
+  weeks.forEach(mon => { for(let i=0;i<5;i++){ const ds = fmtDate(mon + i*DAY_MS); counts[ds]=0; keys[ds]=[]; } });
+  scope.forEach(it => {
+    const evs = new Set([it.created, it.updated, it.resolved].filter(Boolean).map(v => v.slice(0,10)));
+    evs.forEach(ds => { if(ds in counts){ counts[ds]++; keys[ds].push(it.key); } });
+  });
+
+  const DOWN = ["Mon","Tue","Wed","Thu","Fri"];
+  let html = '<div style="overflow-x:auto"><table class="wk"><thead><tr><th></th>' +
+             DOWN.map(d => "<th>"+d+"</th>").join("") + "<th>Total</th></tr></thead><tbody>";
+  weeks.forEach(mon => {
+    let wt = 0, cells = "";
+    for(let i=0;i<5;i++){
+      const ds = fmtDate(mon + i*DAY_MS), n = counts[ds] || 0; wt += n;
+      const title = ds + (n ? ": " + keys[ds].slice(0,15).join(", ") + (keys[ds].length>15 ? "…" : "") : ": none");
+      cells += '<td class="' + (n ? "has" : "zero") + '" title="' + title + '">' + (n || "·") + "</td>";
+    }
+    html += '<tr><td class="lab">Wk of ' + fmtDate(mon) + "</td>" + cells + '<td class="tot">' + wt + "</td></tr>";
+  });
+  html += "</tbody></table></div>";
+  host.innerHTML = html;
+}
+
 // ---------- orchestration ----------
 function render(){
   const f = currentFilters();
@@ -510,6 +570,8 @@ function render(){
 
   listRows = view;
   renderTable();
+
+  renderWeekGrid(scope, f.assignee || "all users");
 }
 
 function init(){

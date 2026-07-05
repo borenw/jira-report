@@ -1,6 +1,6 @@
 # Jira → SQLite → HTML report
 
-**Version `1.2.0`** — the canonical revision lives in [`VERSION`](VERSION).
+**Version `1.3.0`** — the canonical revision lives in [`VERSION`](VERSION).
 Every generated `report.html` is stamped with its version, git revision, and
 build time in the page header and footer, so you can always tell which release
 produced a given report. See [Revision history](#revision-history).
@@ -110,11 +110,18 @@ completion-date forecasts. Change the filters and watch every chart update.
 - **Sortable issue list:** every issue **key links to the live Jira issue**
   (`<base>/browse/<KEY>`, opens in a new tab). The base URL is taken from the
   DB (stored at fetch time) or `--base-url`; the example uses a placeholder.
+- **Logged-activity grid (end of page):** for the selected **user** (and
+  project), a 2-week × Mon–Fri grid counting issues **touched** (created /
+  updated / resolved) each working day, with weekly totals. Hover a cell to see
+  the issue keys. The window anchors on the most recent activity in the data
+  (≈ today for a fresh pull). *Note:* this is a proxy for "logged work" built
+  from issue event dates — it is not Jira worklog hours (those aren't fetched).
 
 ## Revision history
 
 | Version | Changes |
 |---------|---------|
+| **1.3.0** | Added an end-of-page "logged activity" grid: the selected user's touched issues (created/updated/resolved) per weekday over the last two working weeks (Mon–Fri), 2 rows × 5 columns with weekly totals and per-cell issue keys on hover. |
 | **1.2.0** | Forecast now uses the average daily trend ±1σ (was 20th/80th percentile); best/likely/worst completion labels stacked top-right so they no longer overlap; issue-list keys link to the live Jira issue in a new tab (base URL stored in the DB at fetch time). |
 | **1.1.0** | Report defaults to open issues (not done / resolved / closed); burndown & tiles use the project/user scope so the resolution rate stays real; added a sortable issue list below the charts that matches the forecast backlog; reports are now version-stamped. |
 | **1.0.0** | Initial release: curl-based fetch into SQLite, interactive HTML report with filters, bar charts, and a best/likely/worst-case burndown forecast. |
