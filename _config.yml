@@ -1,0 +1,3 @@
+theme: jekyll-theme-cayman
+title: "Jira → SQLite → HTML report"
+description: "Pull Jira issues via curl, build a SQLite DB, generate an interactive HTML report."

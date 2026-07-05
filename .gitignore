@@ -1,0 +1,4 @@
+jira_secrets.ini
+jira.db
+*.db
+report.html
