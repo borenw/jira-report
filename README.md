@@ -1,5 +1,10 @@
 # Jira → SQLite → HTML report
 
+**Version `1.1.0`** — the canonical revision lives in [`VERSION`](VERSION).
+Every generated `report.html` is stamped with its version, git revision, and
+build time in the page header and footer, so you can always tell which release
+produced a given report. See [Revision history](#revision-history).
+
 Pull issues from a **Jira Server / Data Center** instance over the REST API
 (using `curl` + your real username/password), store them in a local SQLite
 database, then generate a single self-contained, interactive HTML report with
@@ -96,10 +101,22 @@ completion-date forecasts. Change the filters and watch every chart update.
   labelled *no completion — backlog not shrinking* instead. Projections are
   capped at 3× the historical span so they stay readable.
 
+## Revision history
+
+| Version | Changes |
+|---------|---------|
+| **1.1.0** | Report defaults to open issues (not done / resolved / closed); burndown & tiles use the project/user scope so the resolution rate stays real; added a sortable issue list below the charts that matches the forecast backlog; reports are now version-stamped. |
+| **1.0.0** | Initial release: curl-based fetch into SQLite, interactive HTML report with filters, bar charts, and a best/likely/worst-case burndown forecast. |
+
+To cut a new revision, bump the number in [`VERSION`](VERSION) and update the
+table above. `chart.py` reads `VERSION` (and appends the current git short SHA
+when run inside the repo) and stamps it into every generated report.
+
 ## Files
 
 | File | Purpose | Commit to git? |
 |------|---------|----------------|
+| `VERSION`           | canonical revision number | yes |
 | `jira_secrets.ini` | your credentials + JQL | **No** (git-ignored) |
 | `jira_to_db.py`    | fetch issues via curl → `jira.db` | yes |
 | `chart.py`         | build `report.html` from `jira.db` | yes |
